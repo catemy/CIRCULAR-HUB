@@ -68,28 +68,9 @@ const nav = [
   { to: '/app/admin', label: 'Admin', icon: ShieldCheck },
 ]
 
-const roles = ['Individual', 'School', 'Hospital', 'Industry', 'NGO']
-
-const starterUsers = [
-  {
-    id: 'u-admin',
-    username: 'admin',
-    email: 'admin@circularhub.global',
-    password: 'admin123',
-    role: 'Admin',
-    country: 'Global',
-    bio: 'CircularHub operations and trust team.',
-    interests: ['AI systems', 'Moderation', 'Global operations'],
-    goals: ['Maintain platform trust'],
-    onboardingComplete: true,
-    points: 0,
-    badges: [],
-  },
-]
-
 const AuthContext = createContext(null)
 const PlatformContext = createContext(null)
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? '' : 'http://localhost:8000')
 
 function readStore(key, fallback) {
   try {
@@ -109,9 +90,9 @@ function usePersistentState(key, fallback) {
 }
 
 function AuthProvider({ children }) {
-  const [users, setUsers] = usePersistentState('circularhub.v3.users', starterUsers)
+  const [users, setUsers] = usePersistentState('circularhub.v3.users', [])
   const [token, setToken] = usePersistentState('circularhub.v3.token', null)
-  const [currentUser, setCurrentUser] = usePersistentState('circularhub.v3.currentUser', starterUsers[0])
+  const [currentUser, setCurrentUser] = usePersistentState('circularhub.v3.currentUser', null)
 
   async function fetchApi(path, method = 'GET', body = null, tokenValue = null) {
     const headers = { 'Content-Type': 'application/json' }
@@ -180,13 +161,18 @@ function AuthProvider({ children }) {
     return current
   }
 
-  const resetPassword = async ({ email, newPassword }) => {
-    await fetchApi('/auth/reset-password', 'POST', { email, new_password: newPassword })
+  const resetPassword = async ({ currentPassword, newPassword }) => {
+    await fetchApi('/auth/reset-password', 'POST', { current_password: currentPassword, new_password: newPassword }, token)
   }
 
   const updateProfile = async (updates) => {
-    const updated = await fetchApi('/users/me', 'PUT', updates, token)
-    const merged = { ...currentUser, ...mergeUser(updated), ...updates }
+    const payload = { ...updates }
+    if ('onboardingComplete' in payload) {
+      payload.onboarding_complete = payload.onboardingComplete
+      delete payload.onboardingComplete
+    }
+    const updated = await fetchApi('/users/me', 'PUT', payload, token)
+    const merged = { ...currentUser, ...mergeUser(updated) }
     setCurrentUser(merged)
     setUsers((items) => items.map((user) => user.id === merged.id ? merged : user))
     return merged
@@ -194,17 +180,19 @@ function AuthProvider({ children }) {
 
   const signOut = () => {
     setToken(null)
-    setCurrentUser(starterUsers[0])
+    setCurrentUser(null)
   }
 
   useEffect(() => {
-    if (token && !currentUser) {
+    if (token) {
       fetchCurrentUser(token).catch(signOut)
+    } else if (currentUser) {
+      setCurrentUser(null)
     }
   }, [token])
 
   return (
-    <AuthContext.Provider value={{ users, currentUser, signUp, signIn, signOut, resetPassword, updateProfile }}>
+    <AuthContext.Provider value={{ users, currentUser, token, signUp, signIn, signOut, resetPassword, updateProfile }}>
       {children}
     </AuthContext.Provider>
   )
@@ -894,7 +882,7 @@ function Landing() {
     <div className="bg-white text-ink">
       <header className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5">
         <div className="flex items-center gap-3 text-lg font-semibold"><span className="grid h-10 w-10 place-items-center rounded-lg bg-forest-900 text-white"><Leaf /></span>CircularHub</div>
-        <NavLink to="/app" className="rounded-md bg-forest-900 px-4 py-2 text-sm font-semibold text-white">Open the dashboard</NavLink>
+        <NavLink to="/auth" className="rounded-md bg-forest-900 px-4 py-2 text-sm font-semibold text-white">Log in</NavLink>
       </header>
       <section className="relative overflow-hidden border-y border-line bg-forest-950 text-white">
         <div className="absolute inset-0 environmental-grid opacity-40" />
@@ -902,34 +890,39 @@ function Landing() {
           <motion.div initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }}>
             <p className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-sm"><Brain size={16} /> AI-powered sustainability operating system</p>
             <h1 className="max-w-4xl text-5xl font-semibold leading-tight md:text-7xl">CircularHub</h1>
-            <p className="mt-6 max-w-2xl text-lg leading-8 text-emerald-50">Waste recognition, environmental education, institutional reporting, circular innovation, and community action in one premium sustainability intelligence platform.</p>
+            <p className="mt-6 max-w-2xl text-lg leading-8 text-emerald-50">A protected sustainability platform for waste recognition, environmental learning, institutional reporting, circular innovation, and community action.</p>
             <div className="mt-8 flex flex-wrap gap-3">
-              <NavLink to="/app" className="rounded-md bg-white px-5 py-3 text-sm font-semibold text-forest-950">Open the dashboard</NavLink>
-              <NavLink to="/app/waste" className="rounded-md border border-white/25 px-5 py-3 text-sm font-semibold text-white">Try AI waste scan</NavLink>
+              <NavLink to="/auth" className="rounded-md bg-white px-5 py-3 text-sm font-semibold text-forest-950">Log in or create account</NavLink>
+              <span className="inline-flex items-center rounded-md border border-white/25 px-5 py-3 text-sm font-semibold text-white">Members only access</span>
             </div>
           </motion.div>
           <Card className="relative border-white/10 bg-white/10 p-5 text-white shadow-soft backdrop-blur">
             <div className="flex items-center justify-between">
-              <div><p className="text-sm text-emerald-100">Environmental command center</p><h2 className="mt-1 text-2xl font-semibold">Live impact intelligence</h2></div>
+              <div><p className="text-sm text-emerald-100">Protected workspace</p><h2 className="mt-1 text-2xl font-semibold">Member access required</h2></div>
               <Sparkles className="text-emerald-200" />
             </div>
             <div className="mt-6 grid grid-cols-2 gap-3">
               {['AI waste reports', 'Learning progress', 'Marketplace requests', 'Campaign evidence'].map((item) => <div key={item} className="rounded-lg bg-white/10 p-4"><CheckCircle2 className="text-emerald-200" /><p className="mt-3 text-sm text-emerald-100">{item}</p></div>)}
             </div>
             <div className="mt-6 space-y-3">
-              {['Learn how to sort and reduce waste', 'Scan items with AI-supported guidance', 'Join campaigns with evidence requirements', 'Build circular marketplace participation'].map((item) => <div key={item} className="rounded-lg bg-white/10 p-3 text-sm text-emerald-50">{item}</div>)}
+              {['Create an account to enter the dashboard', 'Sign in before using scanner tools', 'Protected campaign and marketplace workflows', 'Private profile and contribution records'].map((item) => <div key={item} className="rounded-lg bg-white/10 p-3 text-sm text-emerald-50">{item}</div>)}
             </div>
           </Card>
         </div>
       </section>
       <section className="mx-auto max-w-7xl px-5 py-16">
-        <SectionHeader eyebrow="Platform modules" title="Built for action, education, and institutional trust">Every workflow connects intelligence to measurable sustainability outcomes.</SectionHeader>
+        <SectionHeader eyebrow="Platform modules" title="Built for action, education, and institutional trust">The public page introduces the platform. Account access is required for every dashboard workflow.</SectionHeader>
         <div className="grid gap-4 md:grid-cols-3">
           {[
             [ScanLine, 'AI Waste Recognition', 'Classify waste, hazard, risks, disposal routes, recycling methods, and safe handling.'],
             [MessageSquareText, 'Sustainability Assistant', 'Contextual answers for households, schools, hospitals, and industry teams.'],
             [LineChart, 'Impact Analytics', 'Scores, trends, comparisons, and AI-generated recommendations for institutions.'],
           ].map(([Icon, title, text]) => <Card key={title} className="p-6 transition hover:-translate-y-1 hover:shadow-soft"><Icon className="text-forest-700" /><h3 className="mt-5 text-lg font-semibold">{title}</h3><p className="mt-2 text-sm leading-6 text-slate-600">{text}</p></Card>)}
+        </div>
+        <div className="mt-10 rounded-lg border border-line bg-mist p-6 text-center">
+          <h3 className="text-xl font-semibold">Ready to access CircularHub?</h3>
+          <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-slate-600">Log in or create an account to use the dashboard, scanner, learning tools, campaigns, marketplace, and profile features.</p>
+          <NavLink to="/auth" className="mt-5 inline-flex rounded-md bg-forest-900 px-5 py-3 text-sm font-semibold text-white">Continue to login</NavLink>
         </div>
       </section>
     </div>
@@ -1008,7 +1001,7 @@ function OnboardingPrompt() {
 
 function WasteExplorer() {
   const { saveScan, createPost, scanHistory, liveCampaigns, learning, marketplaceListings } = usePlatform()
-  const { currentUser } = useAuth()
+  const { currentUser, token } = useAuth()
   const [file, setFile] = useState(null)
   const [preview, setPreview] = useState('')
   const [report, setReport] = useState(null)
@@ -1039,7 +1032,11 @@ function WasteExplorer() {
     const body = new FormData()
     body.append('file', file)
     try {
-      const response = await fetch(`${API_BASE_URL}/ai/scanner/analyze`, { method: 'POST', body })
+      const response = await fetch(`${API_BASE_URL}/ai/scanner/analyze`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body,
+      })
       const data = await response.json()
       if (!response.ok) throw new Error(data.detail || 'AI scanner analysis failed.')
       setReport(data.report)
@@ -1511,7 +1508,7 @@ function Analytics() {
 function Profile() {
   const { currentUser, updateProfile } = useAuth()
   const { communityPosts, liveCampaigns, learning } = usePlatform()
-  const [form, setForm] = useState({ username: currentUser.username, email: currentUser.email, country: currentUser.country || '', role: currentUser.role, bio: currentUser.bio || '' })
+  const [form, setForm] = useState({ username: currentUser.username, email: currentUser.email, country: currentUser.country || '', bio: currentUser.bio || '' })
   const saved = communityPosts.filter((post) => post.savedBy.includes(currentUser.id)).length
   const joined = liveCampaigns.filter((campaign) => campaign.joinedBy.includes(currentUser.id)).length
   const completed = learning.reduce((sum, course) => sum + (course.completedLessonsByUser[currentUser.id]?.length || 0), 0)
@@ -1520,7 +1517,7 @@ function Profile() {
       <SectionHeader eyebrow="Profile" title={currentUser.username}>Contribution history, badges, learning progress, campaigns, and innovations shared.</SectionHeader>
       <div className="grid gap-4 lg:grid-cols-[.7fr_1.3fr]">
         <Card className="p-6 text-center"><div className="mx-auto grid h-24 w-24 place-items-center rounded-full bg-forest-900 text-3xl font-semibold text-white">{currentUser.username.slice(0, 2).toUpperCase()}</div><h3 className="mt-4 text-xl font-semibold">{currentUser.role}</h3><p className="text-sm text-slate-500">{currentUser.country || 'Global'}</p><div className="mt-6 grid grid-cols-3 gap-2 text-center"><div><p className="font-semibold">{currentUser.points}</p><p className="text-xs text-slate-500">Score</p></div><div><p className="font-semibold">{joined}</p><p className="text-xs text-slate-500">Campaigns</p></div><div><p className="font-semibold">{saved}</p><p className="text-xs text-slate-500">Saved</p></div></div></Card>
-        <Card className="p-5"><h3 className="font-semibold">Edit profile</h3><form onSubmit={(e) => { e.preventDefault(); updateProfile(form) }} className="mt-4 grid gap-3 md:grid-cols-2"><input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} className="rounded-md border border-line px-3 py-3 text-sm" /><input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="rounded-md border border-line px-3 py-3 text-sm" /><select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className="rounded-md border border-line px-3 py-3 text-sm">{roles.map((role) => <option key={role}>{role}</option>)}</select><input value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })} className="rounded-md border border-line px-3 py-3 text-sm" /><textarea value={form.bio} onChange={(e) => setForm({ ...form, bio: e.target.value })} className="rounded-md border border-line px-3 py-3 text-sm md:col-span-2" /><button className="rounded-md bg-forest-900 px-4 py-3 text-sm font-semibold text-white md:col-span-2">Save profile</button></form></Card>
+        <Card className="p-5"><h3 className="font-semibold">Edit profile</h3><form onSubmit={(e) => { e.preventDefault(); updateProfile(form) }} className="mt-4 grid gap-3 md:grid-cols-2"><input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} className="rounded-md border border-line px-3 py-3 text-sm" /><input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="rounded-md border border-line px-3 py-3 text-sm" /><input value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })} className="rounded-md border border-line px-3 py-3 text-sm md:col-span-2" /><textarea value={form.bio} onChange={(e) => setForm({ ...form, bio: e.target.value })} className="rounded-md border border-line px-3 py-3 text-sm md:col-span-2" /><button className="rounded-md bg-forest-900 px-4 py-3 text-sm font-semibold text-white md:col-span-2">Save profile</button></form></Card>
         <Card className="p-5 lg:col-span-2"><h3 className="font-semibold">Badges and progress</h3><div className="mt-4 grid gap-3 md:grid-cols-3">{[...(currentUser.badges || []), completed ? `${completed} Course Finisher` : 'Learning Starter'].map((b) => <div key={b} className="rounded-lg bg-mist p-4"><Flame className="text-forest-700" /><p className="mt-3 font-medium">{b}</p><p className="text-sm text-slate-500">Verified contribution badge</p></div>)}</div></Card>
       </div>
     </>
@@ -1602,26 +1599,61 @@ function TrendChart({ data = trendData }) {
 }
 
 function AuthPage() {
+  const { currentUser, token, signIn, signUp } = useAuth()
+  const [mode, setMode] = useState('signin')
+  const [form, setForm] = useState({ username: '', email: '', password: '', country: 'Global' })
+  const [error, setError] = useState('')
+  const [status, setStatus] = useState('idle')
+  const navigate = useNavigate()
+
+  if (currentUser && token) return <Navigate to="/app" replace />
+
+  const submit = async (event) => {
+    event.preventDefault()
+    setError('')
+    setStatus('submitting')
+    try {
+      const user = mode === 'signin'
+        ? await signIn({ username: form.username, password: form.password })
+        : await signUp({
+            username: form.username,
+            email: form.email,
+            password: form.password,
+            country: form.country,
+          })
+      navigate(user.onboardingComplete ? '/app' : '/onboarding')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setStatus('idle')
+    }
+  }
+
   return (
     <div className="grid min-h-screen bg-forest-950 text-white lg:grid-cols-[1fr_.9fr]">
       <section className="relative overflow-hidden p-8 md:p-14">
         <div className="absolute inset-0 environmental-grid opacity-40" />
         <div className="relative z-10 max-w-2xl">
           <NavLink to="/" className="flex items-center gap-3 text-lg font-semibold"><span className="grid h-10 w-10 place-items-center rounded-lg bg-white text-forest-900"><Leaf /></span>CircularHub</NavLink>
-          <h1 className="mt-20 text-5xl font-semibold leading-tight md:text-6xl">Sign in and sign up are temporarily unavailable.</h1>
-          <p className="mt-6 text-lg leading-8 text-emerald-50">The account flow is being paused while we stabilize the service. You can still browse the platform with the demo dashboard.</p>
+          <h1 className="mt-20 text-5xl font-semibold leading-tight md:text-6xl">Enter the CircularHub workspace.</h1>
+          <p className="mt-6 text-lg leading-8 text-emerald-50">Use a real account to access scanner tools, campaigns, marketplace workflows, and protected community features.</p>
         </div>
       </section>
       <section className="grid place-items-center bg-white p-5 text-ink">
         <Card className="w-full max-w-md p-6">
-          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-forest-700">Temporary notice</p>
-          <h2 className="mt-3 text-2xl font-semibold">Access the platform without the auth form</h2>
-          <p className="mt-3 text-sm leading-6 text-slate-600">Use the dashboard and scanner sections directly while the login/signup service is being repaired.</p>
-          <div className="mt-6 space-y-3">
-            <NavLink to="/app" className="block rounded-md bg-forest-900 px-4 py-3 text-center text-sm font-semibold text-white">Open the dashboard</NavLink>
-            <NavLink to="/app/waste" className="block rounded-md border border-line px-4 py-3 text-center text-sm font-semibold text-slate-700">Try AI waste scan</NavLink>
-          </div>
-          <p className="mt-4 text-xs text-slate-500">This is a temporary fallback while authentication is being stabilized.</p>
+          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-forest-700">{mode === 'signin' ? 'Sign in' : 'Create account'}</p>
+          <h2 className="mt-3 text-2xl font-semibold">{mode === 'signin' ? 'Welcome back' : 'Join CircularHub'}</h2>
+          <form onSubmit={submit} className="mt-6 space-y-3">
+            <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} className="w-full rounded-md border border-line px-3 py-3 text-sm" placeholder="Username or email" required />
+            {mode === 'signup' && <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full rounded-md border border-line px-3 py-3 text-sm" placeholder="Email" required />}
+            {mode === 'signup' && <input value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })} className="w-full rounded-md border border-line px-3 py-3 text-sm" placeholder="Country" />}
+            <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} className="w-full rounded-md border border-line px-3 py-3 text-sm" placeholder="Password" required />
+            {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+            <button disabled={status === 'submitting'} className="w-full rounded-md bg-forest-900 px-4 py-3 text-sm font-semibold text-white disabled:opacity-60">{status === 'submitting' ? 'Working...' : mode === 'signin' ? 'Sign in' : 'Create account'}</button>
+          </form>
+          <button onClick={() => { setMode(mode === 'signin' ? 'signup' : 'signin'); setError('') }} className="mt-4 w-full rounded-md border border-line px-4 py-3 text-sm font-semibold text-slate-700">
+            {mode === 'signin' ? 'Create a new account' : 'Use an existing account'}
+          </button>
         </Card>
       </section>
     </div>
@@ -1632,7 +1664,6 @@ function OnboardingPage() {
   const { currentUser, updateProfile } = useAuth()
   const navigate = useNavigate()
   const [form, setForm] = useState({
-    role: currentUser?.role || 'Individual',
     interests: currentUser?.interests || [],
     goals: currentUser?.goals || [],
     bio: currentUser?.bio || '',
@@ -1658,7 +1689,6 @@ function OnboardingPage() {
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-forest-700">Onboarding</p>
           <h1 className="mt-3 text-3xl font-semibold">Set up your sustainability workspace</h1>
           <form onSubmit={submit} className="mt-6 space-y-6">
-            <div><label className="text-sm font-semibold">Role</label><select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className="mt-2 w-full rounded-md border border-line px-3 py-3 text-sm">{roles.map((role) => <option key={role}>{role}</option>)}</select></div>
             <ChoiceGrid title="Sustainability interests" values={interests} selected={form.interests} onToggle={(value) => toggle('interests', value)} />
             <ChoiceGrid title="Learning goals" values={goals} selected={form.goals} onToggle={(value) => toggle('goals', value)} />
             <textarea value={form.bio} onChange={(e) => setForm({ ...form, bio: e.target.value })} className="min-h-28 w-full rounded-md border border-line px-3 py-3 text-sm" placeholder="Tell the community what you want to improve." />
@@ -1682,8 +1712,8 @@ function ChoiceGrid({ title, values, selected, onToggle }) {
 }
 
 function ProtectedRoute({ children }) {
-  const { currentUser } = useAuth()
-  if (!currentUser) return <Navigate to="/auth" replace />
+  const { currentUser, token } = useAuth()
+  if (!currentUser || !token) return <Navigate to="/auth" replace />
   if (!currentUser.onboardingComplete && window.location.pathname !== '/onboarding') return <Navigate to="/onboarding" replace />
   return children
 }

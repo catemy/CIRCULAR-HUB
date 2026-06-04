@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 from app.database import get_db
-from app.core.dependencies import get_current_user
+from app.core.dependencies import require_role
 from app.schemas.waste import WasteCategoryResponse, WasteCategoryCreate, WasteIdentifyRequest, WasteCategoryListResponse
 from app.services.waste import WasteService
 
@@ -34,15 +34,15 @@ async def get_waste_category(category_id: UUID, db: AsyncSession = Depends(get_d
     return category
 
 @router.post("/", response_model=WasteCategoryResponse)
-async def create_waste_category(category: WasteCategoryCreate, current_user=Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def create_waste_category(category: WasteCategoryCreate, current_user=Depends(require_role("Admin")), db: AsyncSession = Depends(get_db)):
     return await WasteService.create_category(db, category)
 
 @router.put("/{category_id}", response_model=WasteCategoryResponse)
-async def update_waste_category(category_id: UUID, category: WasteCategoryCreate, current_user=Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def update_waste_category(category_id: UUID, category: WasteCategoryCreate, current_user=Depends(require_role("Admin")), db: AsyncSession = Depends(get_db)):
     return await WasteService.update_category(db, category_id, category)
 
 @router.delete("/{category_id}")
-async def delete_waste_category(category_id: UUID, current_user=Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def delete_waste_category(category_id: UUID, current_user=Depends(require_role("Admin")), db: AsyncSession = Depends(get_db)):
     return await WasteService.delete_category(db, category_id)
 
 @router.post("/identify", response_model=list[WasteCategoryResponse])

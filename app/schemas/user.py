@@ -8,18 +8,23 @@ class UserBase(BaseModel):
     email: EmailStr
     bio: Optional[str] = None
     profile_image_url: Optional[str] = None
-    role: Optional[str] = "Individual"
     country: Optional[str] = "Global"
     interests: List[str] = Field(default_factory=list)
     goals: List[str] = Field(default_factory=list)
     onboarding_complete: bool = False
 
 class UserCreate(UserBase):
-    password: str
+    password: str = Field(min_length=8)
 
-class UserUpdate(UserBase):
+class UserUpdate(BaseModel):
     username: Optional[str] = None
     email: Optional[EmailStr] = None
+    bio: Optional[str] = None
+    profile_image_url: Optional[str] = None
+    country: Optional[str] = None
+    interests: Optional[List[str]] = None
+    goals: Optional[List[str]] = None
+    onboarding_complete: Optional[bool] = None
 
 class User(UserBase):
     id: UUID

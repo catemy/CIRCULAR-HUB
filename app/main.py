@@ -1,7 +1,7 @@
-import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, Base, ensure_sqlite_dev_schema
+from app.core.config import settings
 from app.models import *
 from app.routers import (
     auth_router,
@@ -21,12 +21,14 @@ app = FastAPI(
     title="CircularHub API",
     version="1.0.0",
     description="CircularHub brings sustainable waste education, reuse campaigns, marketplace listings, and analytics together in one platform.",
+    docs_url=None if settings.is_production else "/docs",
+    redoc_url=None if settings.is_production else "/redoc",
+    openapi_url=None if settings.is_production else "/openapi.json",
 )
 
-allowed_origins = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=settings.allowed_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -54,9 +56,10 @@ async def read_root():
 
 @app.on_event("startup")
 async def startup():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    await ensure_sqlite_dev_schema()
+    if not settings.is_production:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await ensure_sqlite_dev_schema()
 
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(videos_router, prefix="/videos", tags=["videos"])

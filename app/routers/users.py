@@ -24,7 +24,16 @@ async def update_my_profile(
     current_user=Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    for field in ["username", "email", "bio", "profile_image_url", "role", "country"]:
+    for field in [
+        "username",
+        "email",
+        "bio",
+        "profile_image_url",
+        "country",
+        "interests",
+        "goals",
+        "onboarding_complete",
+    ]:
         value = getattr(payload, field, None)
         if value is not None:
             setattr(current_user, field, value)

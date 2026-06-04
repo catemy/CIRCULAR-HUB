@@ -23,7 +23,11 @@ class AuthService:
             password_hash=hashed_password,
             bio=user_data.bio,
             profile_image_url=user_data.profile_image_url,
-            role=user_data.role or "Individual",
+            role="Individual",
+            country=user_data.country,
+            interests=user_data.interests,
+            goals=user_data.goals,
+            onboarding_complete=user_data.onboarding_complete,
         )
         db.add(user)
         await db.commit()

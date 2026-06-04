@@ -16,10 +16,12 @@ CircularHub is a multi-tier sustainability platform for waste education, reuse c
    ```bash
    pip install -r requirements.txt
    ```
-3. Optionally configure environment variables:
+3. Configure environment variables:
    - `DATABASE_URL`
    - `SECRET_KEY`
    - `ALLOWED_ORIGINS` (comma-separated CORS origins)
+   - `ENVIRONMENT` (`development`, `staging`, or `production`)
+   - `OPENAI_API_KEY` for AI scanner support
 4. Start the backend:
    ```bash
    uvicorn app.main:app --reload
@@ -51,8 +53,18 @@ CircularHub is a multi-tier sustainability platform for waste education, reuse c
 - enhanced frontend auth flow in `src/main.jsx`
 - richer project metadata and docs guidance
 
+## Production launch notes
+
+- Set `ENVIRONMENT=production`.
+- Use PostgreSQL or another production database through `DATABASE_URL`; SQLite is for local development only.
+- Set a long random `SECRET_KEY`; the API refuses to boot in production with the development default.
+- Set `ALLOWED_ORIGINS` to the exact public frontend origin.
+- Run database migrations/deploy steps outside application startup. In production, the app does not call `create_all()`.
+- Set `VITE_API_BASE_URL` for the frontend build if the API is not served from the same origin.
+- Do not seed demo accounts or demo passwords in production.
+
 ## Notes
 
-- The frontend reads `VITE_API_BASE_URL` and defaults to `http://localhost:8000`.
-- API docs are available at `/docs` and OpenAPI schema at `/openapi.json`.
-- The seeded admin account is configured with role `Admin`."}
+- The frontend reads `VITE_API_BASE_URL` and defaults to same-origin in production or `http://localhost:8000` in development.
+- API docs are available at `/docs` and OpenAPI schema at `/openapi.json` outside production.
+- The seeded admin account is for local/demo use only.
