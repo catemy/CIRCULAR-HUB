@@ -10,6 +10,8 @@ services:
     envVars:
       - key: ENVIRONMENT
         value: staging
+      - key: PYTHON_VERSION
+        value: 3.11.11
       - key: SECRET_KEY
         generateValue: true
       - key: ALLOWED_ORIGINS
