@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Navigate, NavLink, Route, Routes, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
@@ -36,6 +36,7 @@ import {
   UserRound,
   Users,
   WandSparkles,
+  X,
 } from 'lucide-react'
 import {
   Area,
@@ -68,9 +69,38 @@ const nav = [
   { to: '/app/admin', label: 'Admin', icon: ShieldCheck },
 ]
 
+const GUEST_USER = {
+  id: 'guest',
+  username: 'Guest',
+  email: '',
+  country: 'Global',
+  role: 'Visitor',
+  badges: [],
+  interests: [],
+  goals: [],
+  onboardingComplete: true,
+  points: 0,
+}
+
 const AuthContext = createContext(null)
 const PlatformContext = createContext(null)
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? '' : 'http://localhost:8000')
+const API_BASE_URL = (() => {
+  if (import.meta.env.VITE_API_BASE_URL) {
+    return import.meta.env.VITE_API_BASE_URL
+  }
+  if (typeof window === 'undefined') {
+    return 'http://localhost:8000'
+  }
+  const origin = window.location.origin
+  const isLocal = /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname)
+  if (isLocal) {
+    return 'http://localhost:8000'
+  }
+  console.warn(
+    'VITE_API_BASE_URL is not set. API requests will use the current origin. Set VITE_API_BASE_URL in production if your backend is hosted separately.'
+  )
+  return origin
+})()
 
 function readStore(key, fallback) {
   try {
@@ -81,8 +111,15 @@ function readStore(key, fallback) {
   }
 }
 
-function usePersistentState(key, fallback) {
-  const [value, setValue] = useState(() => readStore(key, fallback))
+if (import.meta.env.PROD) {
+  console.info('CircularHub frontend running with API_BASE_URL:', API_BASE_URL)
+}
+
+function usePersistentState(key, fallback, hydrate) {
+  const [value, setValue] = useState(() => {
+    const stored = readStore(key, fallback)
+    return hydrate ? hydrate(stored) : stored
+  })
   useEffect(() => {
     localStorage.setItem(key, JSON.stringify(value))
   }, [key, value])
@@ -92,21 +129,44 @@ function usePersistentState(key, fallback) {
 function AuthProvider({ children }) {
   const [users, setUsers] = usePersistentState('circularhub.v3.users', [])
   const [token, setToken] = usePersistentState('circularhub.v3.token', null)
+  const [guest, setGuest] = usePersistentState('circularhub.v3.guest', false)
   const [currentUser, setCurrentUser] = usePersistentState('circularhub.v3.currentUser', null)
 
   async function fetchApi(path, method = 'GET', body = null, tokenValue = null) {
     const headers = { 'Content-Type': 'application/json' }
     if (tokenValue) headers.Authorization = `Bearer ${tokenValue}`
 
-    const response = await fetch(`${API_BASE_URL}${path}`, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    })
+    const url = `${API_BASE_URL}${path}`
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 10000)
+    let response
+    try {
+      response = await fetch(url, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      })
+    } catch (err) {
+      if (err.name === 'AbortError') throw new Error(`Request to ${url} timed out`)
+      throw new Error(
+        `Failed to fetch API at ${url}. Check VITE_API_BASE_URL, CORS, and backend availability. (${err.message})`
+      )
+    } finally {
+      clearTimeout(timeout)
+    }
 
-    const payload = await response.json().catch(() => null)
+    const text = await response.text().catch(() => '')
+    let payload = null
+    try {
+      payload = text ? JSON.parse(text) : null
+    } catch (e) {
+      payload = text
+    }
+
     if (!response.ok) {
-      throw new Error(payload?.detail || payload?.message || 'API request failed')
+      const detail = payload?.detail || payload?.message || (typeof payload === 'string' ? payload : `API request failed (${response.status})`)
+      throw new Error(detail)
     }
     return payload
   }
@@ -137,6 +197,7 @@ function AuthProvider({ children }) {
   }
 
   const signUp = async (payload) => {
+    setGuest(false)
     const user = await fetchApi('/auth/register', 'POST', payload)
     const tokenPayload = await fetchApi('/auth/login', 'POST', { username: payload.username, password: payload.password })
     const merged = {
@@ -154,11 +215,19 @@ function AuthProvider({ children }) {
   }
 
   const signIn = async ({ username, password }) => {
+    setGuest(false)
     const tokenPayload = await fetchApi('/auth/login', 'POST', { username, password })
     setToken(tokenPayload.access_token)
     const current = await fetchCurrentUser(tokenPayload.access_token)
     setCurrentUser(current)
     return current
+  }
+
+  const signInAsGuest = async () => {
+    setGuest(true)
+    setToken(null)
+    setCurrentUser(GUEST_USER)
+    return GUEST_USER
   }
 
   const resetPassword = async ({ currentPassword, newPassword }) => {
@@ -179,20 +248,46 @@ function AuthProvider({ children }) {
   }
 
   const signOut = () => {
+    setGuest(false)
     setToken(null)
     setCurrentUser(null)
   }
 
+  const [loadingUser, setLoadingUser] = useState(false)
+
   useEffect(() => {
-    if (token) {
-      fetchCurrentUser(token).catch(signOut)
-    } else if (currentUser) {
-      setCurrentUser(null)
+    let active = true
+    const load = async () => {
+      if (!token) {
+        if (guest) {
+          if (active) {
+            setCurrentUser(GUEST_USER)
+            setLoadingUser(false)
+          }
+          return
+        }
+        if (active) {
+          setCurrentUser(null)
+          setLoadingUser(false)
+        }
+        return
+      }
+      if (active) setLoadingUser(true)
+      try {
+        const user = await fetchCurrentUser(token)
+        if (active) setCurrentUser(user)
+      } catch (err) {
+        signOut()
+      } finally {
+        if (active) setLoadingUser(false)
+      }
     }
+    load()
+    return () => { active = false }
   }, [token])
 
   return (
-    <AuthContext.Provider value={{ users, currentUser, token, signUp, signIn, signOut, resetPassword, updateProfile }}>
+    <AuthContext.Provider value={{ users, currentUser, token, guest, loadingUser, signUp, signIn, signInAsGuest, signOut, resetPassword, updateProfile }}>
       {children}
     </AuthContext.Provider>
   )
@@ -336,8 +431,9 @@ const courseCatalog = [
     summary: 'Learn how source separation, labeling, contamination control, and local collection systems determine whether materials can be recovered safely.',
     lessons: [
       { id: 'seg-1', type: 'article', title: 'Why source segregation determines recycling success', duration: '9 min', content: 'Waste segregation works when materials are separated before contamination occurs. Organic residue, mixed hazardous items, and wet materials can lower recovery value or make recycling unsafe. A practical segregation system starts with clear categories, consistent labels, staff training, and a feedback loop from collectors or material recovery facilities.' },
-      { id: 'seg-2', type: 'video', title: 'Designing a color-coded bin station', duration: '6 min', content: 'Video lesson script: map user behavior, place bins together, use picture labels, and audit contamination weekly.' },
+      { id: 'seg-2', type: 'video', title: 'Designing a color-coded bin station', duration: '6 min', content: 'Start by observing where people actually discard materials and place the station on that route. Keep accepted materials together, use words and simple pictures, and make the opening match the item. Confirm the local collector accepts each category before adding a bin. During a weekly check, look for the three most common misplaced items, update the sign, and explain the change to users.' },
       { id: 'seg-3', type: 'quiz', title: 'Segregation decision quiz', duration: '5 questions', questions: ['What should happen to food-contaminated paper?', 'Why should batteries be isolated?', 'What makes signage effective?'] },
+      { id: 'seg-4', type: 'project', title: 'Run a one-week waste sorting audit', duration: '20 min + observation', content: 'Choose one shared space and observe its waste station for five working days. Record the number of bins, what materials are accepted, and the most frequent sorting mistakes without handling hazardous waste. Ask the collection partner which materials are actually recovered. Use your findings to make one sign or layout change, then compare contamination before and after. Share the result and note any limits in your sample.' },
     ],
   },
   {
@@ -351,6 +447,7 @@ const courseCatalog = [
       { id: 'circ-1', type: 'article', title: 'From linear waste to circular value', duration: '11 min', content: 'A circular economy designs out waste by keeping products and materials in use. Priority actions are refusal, reduction, reuse, repair, remanufacturing, and recycling only after higher-value loops are exhausted.' },
       { id: 'circ-2', type: 'article', title: 'Sustainable consumption in daily procurement', duration: '8 min', content: 'Procurement has climate leverage. Choose durable goods, repairable devices, minimal packaging, recycled content, supplier take-back programs, and service models that reduce ownership waste.' },
       { id: 'circ-3', type: 'quiz', title: 'Circular strategy check', duration: '6 questions', questions: ['Which loop preserves the most value?', 'What is a take-back program?', 'How does repair reduce embodied emissions?'] },
+      { id: 'circ-4', type: 'project', title: 'Map a product’s circular journey', duration: '25 min', content: 'Select a common item such as a chair, uniform, or laptop. Trace its material sourcing, manufacture, purchase, use, maintenance, and end-of-life route. At each stage, identify who owns the item and where value is lost. Propose the highest-value realistic change first, such as longer warranties, repair access, sharing, refill, or supplier take-back. Check who would pay, what infrastructure is needed, and how success could be measured.' },
     ],
   },
   {
@@ -362,8 +459,9 @@ const courseCatalog = [
     summary: 'Professional handling of infectious waste, sharps, color-coded segregation, spill response, and chain-of-custody documentation.',
     lessons: [
       { id: 'med-1', type: 'article', title: 'Clinical waste streams and hazard boundaries', duration: '12 min', content: 'Medical waste requires segregation at the point of generation. Sharps, infectious waste, pharmaceutical waste, and general non-hazardous packaging should never be collapsed into one stream because treatment, transport, and worker protections differ.' },
-      { id: 'med-2', type: 'video', title: 'Sharps container placement and closure protocol', duration: '7 min', content: 'Video lesson script: place containers at point of care, do not overfill, never recap needles by hand, and document container transfer.' },
+      { id: 'med-2', type: 'video', title: 'Sharps container placement and closure protocol', duration: '7 min', content: 'Use only approved, puncture-resistant sharps containers and place them within easy reach at the point of use, away from public access. Follow facility policy and the container fill line; close and replace the container before it is overfilled. Never reach into a container or recap a used needle by hand. Secure the closed container for the approved pickup route and document transfer according to local requirements. Follow your facility’s exposure and spill procedures.' },
       { id: 'med-3', type: 'quiz', title: 'Healthcare waste safety quiz', duration: '7 questions', questions: ['When is a sharps container full?', 'What PPE is needed for spill response?', 'Which waste can be recycled after sterilization?'] },
+      { id: 'med-4', type: 'project', title: 'Create a point-of-care safety check', duration: '15 min', content: 'With an infection-prevention or environmental-services lead, walk through one care area without touching waste. Check whether each bin is clearly labeled, accessible, compatible with facility policy, and separated from clean supplies. Confirm staff know where to find spill and exposure instructions and how full containers are replaced. Record gaps for the responsible team to correct; never handle sharps or infectious materials as part of this learning activity.' },
     ],
   },
   {
@@ -377,6 +475,7 @@ const courseCatalog = [
       { id: 'ind-1', type: 'article', title: 'Material flow mapping for operational teams', duration: '10 min', content: 'Industrial waste reduction begins with a mass-balance view of inputs, outputs, rejects, water, energy, packaging, and hazardous residues. Teams should quantify streams, identify root causes, and prioritize source reduction before downstream disposal.' },
       { id: 'ind-2', type: 'article', title: 'Industrial symbiosis and byproduct exchange', duration: '9 min', content: 'One facility’s byproduct can become another facility’s input when quality, safety, transport, and regulatory requirements are met. Documentation and testing are essential.' },
       { id: 'ind-3', type: 'quiz', title: 'Waste stream mapping quiz', duration: '5 questions', questions: ['What is a mass balance?', 'Why verify byproduct quality?', 'What should be tracked in a transfer manifest?'] },
+      { id: 'ind-4', type: 'project', title: 'Build a simple material flow map', duration: '30 min', content: 'Choose one production line and a defined period, such as one shift. Record the quantity and unit of each major input, saleable output, rework, scrap, packaging, and regulated residue using existing operational records. Check that the totals are plausible and investigate unexplained gaps before drawing conclusions. Mark where losses occur, who controls the process, and what data is uncertain. Select one prevention opportunity and agree on a safe, measurable trial with operations and compliance teams.' },
     ],
   },
   {
@@ -388,8 +487,9 @@ const courseCatalog = [
     summary: 'Understand methane, compost recipes, food recovery hierarchy, contamination prevention, and behavior change for organic waste.',
     lessons: [
       { id: 'org-1', type: 'article', title: 'Why landfilled food waste becomes a climate issue', duration: '8 min', content: 'Organic waste in landfills decomposes without oxygen and can release methane, a powerful greenhouse gas. Prevention, food donation, animal feed where appropriate, composting, and anaerobic digestion are preferred pathways.' },
-      { id: 'org-2', type: 'video', title: 'Balancing greens, browns, air, and moisture', duration: '6 min', content: 'Video lesson script: combine nitrogen-rich food scraps with carbon-rich dry matter, maintain airflow, and manage moisture to reduce odor.' },
+      { id: 'org-2', type: 'video', title: 'Balancing greens, browns, air, and moisture', duration: '6 min', content: 'Food scraps and fresh plant material are nitrogen-rich “greens”; dry leaves, shredded untreated cardboard, and small woody pieces provide carbon-rich “browns.” Mix rather than layering a wet food pocket, and keep the pile damp like a wrung-out sponge. Turn or aerate it when the system allows. A sour smell often signals excess moisture or too little air; add dry browns and improve airflow. Follow local guidance on accepted inputs, pests, and finished-compost use.' },
       { id: 'org-3', type: 'quiz', title: 'Composting operations quiz', duration: '6 questions', questions: ['What causes odors?', 'Why add browns?', 'When is food recovery better than composting?'] },
+      { id: 'org-4', type: 'project', title: 'Set up a food-scrap prevention and recovery plan', duration: '1-week activity', content: 'For one week, record avoidable food discards by type and where they arise, such as ordering, preparation, or serving. First test a prevention step like better meal planning or smaller batch preparation. Identify safe donation or sharing options for edible surplus where permitted, then check whether local organics collection accepts the remaining scraps. Assign clear roles for collection and contamination checks. Compare the next week’s results and report quantities only when they were actually measured.' },
     ],
   },
   {
@@ -403,6 +503,7 @@ const courseCatalog = [
       { id: 'ew-1', type: 'article', title: 'E-waste hazards and recovery value', duration: '10 min', content: 'Electronic waste can contain valuable metals and hazardous components. Safe programs protect data, isolate batteries, prevent fires, and route devices to repair, refurbishment, or certified recycling.' },
       { id: 'ew-2', type: 'article', title: 'Battery collection and fire prevention', duration: '7 min', content: 'Lithium batteries should be protected from puncture and short circuits. Tape terminals, store in a cool dry container, and use approved collection partners.' },
       { id: 'ew-3', type: 'quiz', title: 'E-waste triage quiz', duration: '5 questions', questions: ['Why wipe data?', 'How do you store loose batteries?', 'When is repair preferred?'] },
+      { id: 'ew-4', type: 'project', title: 'Plan a safe electronics collection event', duration: '25 min', content: 'Before announcing an event, confirm an authorized downstream partner, the exact devices and batteries accepted, packaging rules, and how collected materials will be transported. Provide a dry, supervised storage area and keep damaged or swollen batteries out of ordinary collection; ask the qualified partner for handling instructions. Tell participants to back up and remove personal data using device-maker guidance. Track item counts and handoff receipts, and share the verified destination rather than promising recycling without confirmation.' },
     ],
   },
   {
@@ -414,9 +515,10 @@ const courseCatalog = [
     summary: 'Study plastic pollution pathways, polymer sorting, contamination, microplastics, recycling limits, and practical alternatives to single-use plastics.',
     lessons: [
       { id: 'pla-1', type: 'article', title: 'How plastic pollution moves through communities and waterways', duration: '12 min', content: 'Plastic waste becomes an environmental problem when collection, sorting, and product design fail at the same time. Lightweight packaging can escape bins, enter stormwater, fragment under sunlight, and become difficult to recover. Reducing plastic leakage requires prevention, reusable systems, collection access, and clear separation of recyclable materials.' },
-      { id: 'pla-2', type: 'video', title: 'Understanding polymer codes and real recycling constraints', duration: '8 min', content: 'Video lesson script: compare PET, HDPE, PVC, LDPE, PP, PS, and mixed plastics; explain why clean single-polymer streams are easier to recycle than multilayer packaging.' },
+      { id: 'pla-2', type: 'video', title: 'Understanding polymer codes and real recycling constraints', duration: '8 min', content: 'Resin identification codes help identify the plastic resin, but they do not guarantee that an item is accepted by a local recycling program. PET bottles and HDPE containers are commonly collected in some systems, while films, foam, PVC, and mixed-material packaging may need separate specialized routes or may not be accepted. Empty and prepare items according to local instructions, and keep non-accepted materials out of recycling bins. When comparing packaging, prioritize avoiding unnecessary single-use items and choosing reusable formats where practical.' },
       { id: 'pla-3', type: 'project', title: 'Single-use plastic audit', duration: 'Field activity', content: 'Learners document one week of avoidable single-use items, identify refill or reuse alternatives, and create a reduction plan with procurement or household behavior changes.' },
       { id: 'pla-4', type: 'quiz', title: 'Plastic reduction quiz', duration: '7 questions', questions: ['Why are multilayer sachets difficult to recycle?', 'How do microplastics form?', 'Which intervention prevents waste before it exists?'] },
+      { id: 'pla-5', type: 'project', title: 'Design a reusable alternative trial', duration: '2-week activity', content: 'Choose one recurring single-use item in a school, workplace, or household. Count its use for a representative week and learn why people rely on it, including hygiene, cost, and convenience. Test a practical alternative such as a deposit-return cup or refill point with cleaning, storage, and return responsibilities defined in advance. Count participation, losses, and any disposable items still needed. Decide whether the trial genuinely reduced material use before recommending a wider rollout.' },
     ],
   },
   {
@@ -431,6 +533,7 @@ const courseCatalog = [
       { id: 'cli-2', type: 'article', title: 'Embodied emissions in products', duration: '9 min', content: 'A product carries emissions from raw material extraction, manufacturing, transport, use, and disposal. Repair, reuse, and longer product lifetimes can reduce demand for new production and avoid unnecessary embodied emissions.' },
       { id: 'cli-3', type: 'project', title: 'Climate-aware waste action plan', duration: 'Workshop', content: 'Learners choose one waste stream, identify prevention and recovery options, and document climate-related benefits and tradeoffs without overstating impact.' },
       { id: 'cli-4', type: 'quiz', title: 'Waste and climate quiz', duration: '6 questions', questions: ['Why does food waste matter for climate?', 'What are embodied emissions?', 'When is reuse more impactful than recycling?'] },
+      { id: 'cli-5', type: 'project', title: 'Compare two waste interventions fairly', duration: '30 min', content: 'Compare two options for the same material, such as prevention and recycling, using the same boundary and time period. Include collection, transport, processing, product lifetime, and the local energy and waste context when reliable data is available. State assumptions and uncertainties; do not convert kilograms diverted directly into carbon savings without a suitable method. Identify practical co-benefits and trade-offs, then define what data would improve the comparison.' },
     ],
   },
   {
@@ -442,9 +545,10 @@ const courseCatalog = [
     summary: 'Build practical habits around purchasing, maintenance, sharing, reuse, repair, and lower-waste living without relying on perfection or greenwashing.',
     lessons: [
       { id: 'sus-1', type: 'article', title: 'Conscious purchasing without greenwashing', duration: '10 min', content: 'Sustainable purchasing begins by asking whether a product is needed, whether an existing item can be repaired, borrowed, refilled, or bought secondhand, and whether claims are backed by transparent materials, durability, and end-of-life information.' },
-      { id: 'sus-2', type: 'video', title: 'Building a low-waste household or workplace routine', duration: '7 min', content: 'Video lesson script: focus on repeat systems such as refill stations, shared supplies, repair corners, meal planning, and consistent sorting rather than one-time eco purchases.' },
+      { id: 'sus-2', type: 'video', title: 'Building a low-waste household or workplace routine', duration: '7 min', content: 'Pick one routine that creates waste every week, then make the lower-waste choice the convenient default. Examples include a clearly maintained refill point, shared office supplies, a repair contact list, or meal planning based on what is already available. Assign someone to restock and maintain shared equipment, and make instructions easy to find. Start small, ask users what gets in the way, and adjust for affordability and access instead of expecting perfect participation.' },
       { id: 'sus-3', type: 'project', title: 'Footprint reduction sprint', duration: '14-day activity', content: 'Learners select three recurring waste habits, test realistic alternatives, and record barriers such as cost, access, convenience, or policy constraints.' },
       { id: 'sus-4', type: 'quiz', title: 'Sustainable consumption quiz', duration: '6 questions', questions: ['What is greenwashing?', 'Why is durability important?', 'When can sharing reduce material demand?'] },
+      { id: 'sus-5', type: 'project', title: 'Create a repair-before-replace checklist', duration: '20 min', content: 'Choose a frequently replaced item and list the common reasons it is discarded. Find the warranty, safe maintenance instructions, local repair options, and any spare parts that are available. Estimate the time and cost of repair alongside replacement, without assuming repair is always possible or safe. Share a simple decision path with your household or team, including when to stop and seek a qualified technician. Review after a month to see whether the checklist changed purchasing or repair behavior.' },
     ],
   },
   {
@@ -459,6 +563,7 @@ const courseCatalog = [
       { id: 'inn-2', type: 'article', title: 'Evidence, safety, and impact claims', duration: '9 min', content: 'Creators should document materials used, quantities diverted, safety precautions, expected product lifetime, and limits of their claims. Honest evidence builds trust and prevents harmful reuse of hazardous materials.' },
       { id: 'inn-3', type: 'project', title: 'Circular prototype canvas', duration: 'Studio activity', content: 'Learners map a waste source, user need, product concept, safety check, repair plan, and end-of-life pathway before building a prototype.' },
       { id: 'inn-4', type: 'quiz', title: 'Innovation readiness quiz', duration: '7 questions', questions: ['Why validate material safety?', 'What makes an impact claim credible?', 'How can partnerships improve circular innovation?'] },
+      { id: 'inn-5', type: 'project', title: 'Test a circular idea before building', duration: '45 min', content: 'Write a one-sentence problem statement naming who is affected, where it occurs, and what evidence supports it. Interview a few intended users and a relevant waste or safety professional before choosing a material or design. Sketch the smallest test that can answer a key assumption, then define success, failure, and stop conditions. Check product safety, maintenance, repair, and end-of-life routes. Record feedback and revise the idea before investing in a full prototype or making impact claims.' },
     ],
   },
 ]
@@ -497,6 +602,27 @@ const starterLearning = courseCatalog.map((course) => ({
   completedLessonsByUser: {},
   certificatesByUser: {},
 }))
+
+function mergeLearningCatalog(savedCourses) {
+  if (!Array.isArray(savedCourses)) return starterLearning
+
+  const savedById = new Map(savedCourses.map((course) => [course.id, course]))
+  const catalogIds = new Set(starterLearning.map((course) => course.id))
+  const currentCourses = starterLearning.map((course) => {
+    const saved = savedById.get(course.id)
+    if (!saved) return course
+    return {
+      ...saved,
+      ...course,
+      completedBy: saved.completedBy || course.completedBy,
+      quizScore: saved.quizScore || course.quizScore,
+      completedLessonsByUser: saved.completedLessonsByUser || course.completedLessonsByUser,
+      certificatesByUser: saved.certificatesByUser || course.certificatesByUser,
+    }
+  })
+
+  return [...currentCourses, ...savedCourses.filter((course) => !catalogIds.has(course.id))]
+}
 
 const marketplaceSections = [
   'Recycled & Upcycled Products',
@@ -615,7 +741,7 @@ const starterStorefronts = []
 function PlatformProvider({ children }) {
   const [communityPosts, setCommunityPosts] = usePersistentState('circularhub.v4.posts', starterPosts)
   const [liveCampaigns, setLiveCampaigns] = usePersistentState('circularhub.v4.campaigns', starterCampaigns)
-  const [learning, setLearning] = usePersistentState('circularhub.v4.learning', starterLearning)
+  const [learning, setLearning] = usePersistentState('circularhub.v4.learning', starterLearning, mergeLearningCatalog)
   const [scanHistory, setScanHistory] = usePersistentState('circularhub.v4.scans', [])
   const [marketplaceListings, setMarketplaceListings] = usePersistentState('circularhub.v4.marketplace', starterMarketplaceListings)
   const [storefronts, setStorefronts] = usePersistentState('circularhub.v4.storefronts', starterStorefronts)
@@ -878,11 +1004,19 @@ function AppShell() {
 }
 
 function Landing() {
+  const { signInAsGuest } = useAuth()
+  const navigate = useNavigate()
+
+  const continueAsGuest = async () => {
+    await signInAsGuest()
+    navigate('/app')
+  }
+
   return (
     <div className="bg-white text-ink">
       <header className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5">
         <div className="flex items-center gap-3 text-lg font-semibold"><span className="grid h-10 w-10 place-items-center rounded-lg bg-forest-900 text-white"><Leaf /></span>CircularHub</div>
-        <NavLink to="/auth" className="rounded-md bg-forest-900 px-4 py-2 text-sm font-semibold text-white">Log in</NavLink>
+        <button onClick={continueAsGuest} className="rounded-md bg-forest-900 px-4 py-2 text-sm font-semibold text-white">Open app</button>
       </header>
       <section className="relative overflow-hidden border-y border-line bg-forest-950 text-white">
         <div className="absolute inset-0 environmental-grid opacity-40" />
@@ -890,28 +1024,28 @@ function Landing() {
           <motion.div initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }}>
             <p className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-sm"><Brain size={16} /> AI-powered sustainability operating system</p>
             <h1 className="max-w-4xl text-5xl font-semibold leading-tight md:text-7xl">CircularHub</h1>
-            <p className="mt-6 max-w-2xl text-lg leading-8 text-emerald-50">A protected sustainability platform for waste recognition, environmental learning, institutional reporting, circular innovation, and community action.</p>
+            <p className="mt-6 max-w-2xl text-lg leading-8 text-emerald-50">A sustainability platform for waste recognition, environmental learning, institutional reporting, circular innovation, and community action.</p>
             <div className="mt-8 flex flex-wrap gap-3">
-              <NavLink to="/auth" className="rounded-md bg-white px-5 py-3 text-sm font-semibold text-forest-950">Log in or create account</NavLink>
-              <span className="inline-flex items-center rounded-md border border-white/25 px-5 py-3 text-sm font-semibold text-white">Members only access</span>
+              <button onClick={continueAsGuest} className="rounded-md bg-white px-5 py-3 text-sm font-semibold text-forest-950">Continue as guest</button>
+              <NavLink to="/auth" className="inline-flex items-center rounded-md border border-white/25 px-5 py-3 text-sm font-semibold text-white">Sign in / create account</NavLink>
             </div>
           </motion.div>
           <Card className="relative border-white/10 bg-white/10 p-5 text-white shadow-soft backdrop-blur">
             <div className="flex items-center justify-between">
-              <div><p className="text-sm text-emerald-100">Protected workspace</p><h2 className="mt-1 text-2xl font-semibold">Member access required</h2></div>
+              <div><p className="text-sm text-emerald-100">Flexible access</p><h2 className="mt-1 text-2xl font-semibold">Account is optional</h2></div>
               <Sparkles className="text-emerald-200" />
             </div>
             <div className="mt-6 grid grid-cols-2 gap-3">
               {['AI waste reports', 'Learning progress', 'Marketplace requests', 'Campaign evidence'].map((item) => <div key={item} className="rounded-lg bg-white/10 p-4"><CheckCircle2 className="text-emerald-200" /><p className="mt-3 text-sm text-emerald-100">{item}</p></div>)}
             </div>
             <div className="mt-6 space-y-3">
-              {['Create an account to enter the dashboard', 'Sign in before using scanner tools', 'Protected campaign and marketplace workflows', 'Private profile and contribution records'].map((item) => <div key={item} className="rounded-lg bg-white/10 p-3 text-sm text-emerald-50">{item}</div>)}
+              {['Explore as a guest immediately', 'Sign in later to save progress', 'Optional campaign and marketplace workflows', 'Private profile and contribution records available with login'].map((item) => <div key={item} className="rounded-lg bg-white/10 p-3 text-sm text-emerald-50">{item}</div>)}
             </div>
           </Card>
         </div>
       </section>
       <section className="mx-auto max-w-7xl px-5 py-16">
-        <SectionHeader eyebrow="Platform modules" title="Built for action, education, and institutional trust">The public page introduces the platform. Account access is required for every dashboard workflow.</SectionHeader>
+        <SectionHeader eyebrow="Platform modules" title="Built for action, education, and institutional trust">The public page introduces the platform. Continue to the app for dashboard, scanner, learning, marketplace, and campaigns.</SectionHeader>
         <div className="grid gap-4 md:grid-cols-3">
           {[
             [ScanLine, 'AI Waste Recognition', 'Classify waste, hazard, risks, disposal routes, recycling methods, and safe handling.'],
@@ -921,8 +1055,8 @@ function Landing() {
         </div>
         <div className="mt-10 rounded-lg border border-line bg-mist p-6 text-center">
           <h3 className="text-xl font-semibold">Ready to access CircularHub?</h3>
-          <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-slate-600">Log in or create an account to use the dashboard, scanner, learning tools, campaigns, marketplace, and profile features.</p>
-          <NavLink to="/auth" className="mt-5 inline-flex rounded-md bg-forest-900 px-5 py-3 text-sm font-semibold text-white">Continue to login</NavLink>
+          <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-slate-600">Continue to the app to use the dashboard, scanner, learning tools, campaigns, marketplace, and profile features.</p>
+          <NavLink to="/app" className="mt-5 inline-flex rounded-md bg-forest-900 px-5 py-3 text-sm font-semibold text-white">Continue to app</NavLink>
         </div>
       </section>
     </div>
@@ -1008,6 +1142,9 @@ function WasteExplorer() {
   const [status, setStatus] = useState('idle')
   const [error, setError] = useState('')
   const [step, setStep] = useState(0)
+  const [cameraOn, setCameraOn] = useState(false)
+  const videoRef = useRef(null)
+  const streamRef = useRef(null)
   const scanningSteps = ['Analyzing waste composition...', 'Detecting sustainability risks...', 'Generating recycling insights...']
 
   useEffect(() => {
@@ -1016,6 +1153,14 @@ function WasteExplorer() {
     return () => clearInterval(timer)
   }, [status])
 
+  const stopCamera = () => {
+    streamRef.current?.getTracks().forEach((track) => track.stop())
+    streamRef.current = null
+    setCameraOn(false)
+  }
+
+  useEffect(() => stopCamera, [])
+
   const chooseFile = (selected) => {
     const image = selected?.[0]
     if (!image) return
@@ -1023,6 +1168,37 @@ function WasteExplorer() {
     setPreview(URL.createObjectURL(image))
     setReport(null)
     setError('')
+  }
+
+  const startCamera = async () => {
+    setError('')
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+      streamRef.current = stream
+      setCameraOn(true)
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
+        await videoRef.current.play()
+      }
+    } catch (err) {
+      setError(`Could not access the camera. (${err.message})`)
+      setCameraOn(false)
+    }
+  }
+
+  const capturePhoto = () => {
+    const video = videoRef.current
+    if (!video || !video.videoWidth) return
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height)
+    canvas.toBlob((blob) => {
+      if (!blob) return
+      const image = new File([blob], `waste-scan-${Date.now()}.jpg`, { type: 'image/jpeg' })
+      chooseFile([image])
+      stopCamera()
+    }, 'image/jpeg', 0.92)
   }
 
   const analyze = async () => {
@@ -1072,13 +1248,26 @@ function WasteExplorer() {
       <div className="grid gap-4 xl:grid-cols-[.9fr_1.1fr]">
         <Card className="p-5">
           <h3 className="flex items-center gap-2 font-semibold"><Camera size={18} /> AI waste scanner</h3>
-          <label onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); chooseFile(e.dataTransfer.files) }} className="mt-4 block cursor-pointer rounded-lg border border-dashed border-forest-300 bg-forest-50 p-8 text-center transition hover:bg-forest-100">
-            <input type="file" accept="image/png,image/jpeg,image/webp" capture="environment" onChange={(e) => chooseFile(e.target.files)} className="hidden" />
-            <Upload className="mx-auto text-forest-700" />
-            <p className="mt-3 font-semibold">Drag, upload, or capture a waste image</p>
-            <p className="mt-2 text-sm text-slate-600">The image is sent to the FastAPI scanner endpoint and analyzed by OpenAI Vision when `OPENAI_API_KEY` is configured.</p>
-          </label>
-          {preview && <img src={preview} alt="Waste scan preview" className="mt-4 max-h-72 w-full rounded-lg object-cover" />}
+          {cameraOn ? (
+            <div className="mt-4 overflow-hidden rounded-lg border border-forest-300 bg-black">
+              <video ref={videoRef} autoPlay playsInline muted className="max-h-72 w-full object-cover" />
+              <div className="flex gap-2 bg-ink p-3">
+                <button onClick={capturePhoto} className="flex-1 rounded-md bg-forest-900 px-3 py-2 text-sm font-semibold text-white">Capture photo</button>
+                <button onClick={stopCamera} className="rounded-md border border-white/30 px-3 py-2 text-sm font-semibold text-white"><X size={16} /></button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <label onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); chooseFile(e.dataTransfer.files) }} className="mt-4 block cursor-pointer rounded-lg border border-dashed border-forest-300 bg-forest-50 p-8 text-center transition hover:bg-forest-100">
+                <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => chooseFile(e.target.files)} className="hidden" />
+                <Upload className="mx-auto text-forest-700" />
+                <p className="mt-3 font-semibold">Drag or upload a waste image</p>
+                <p className="mt-2 text-sm text-slate-600">The image is sent to the FastAPI scanner endpoint and analyzed by OpenAI Vision when `OPENAI_API_KEY` is configured.</p>
+              </label>
+              <button onClick={startCamera} className="mt-3 flex w-full items-center justify-center gap-2 rounded-md border border-forest-300 bg-white px-4 py-3 text-sm font-semibold text-forest-800 hover:bg-forest-50"><Camera size={16} /> Use camera instead</button>
+            </>
+          )}
+          {preview && !cameraOn && <img src={preview} alt="Waste scan preview" className="mt-4 max-h-72 w-full rounded-lg object-cover" />}
           {status === 'scanning' && <div className="mt-4 rounded-lg bg-ink p-4 text-white"><div className="h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full w-2/3 animate-pulse rounded-full bg-emerald-300" /></div><p className="mt-3 text-sm font-semibold">{scanningSteps[step]}</p></div>}
           {error && <div className="mt-4 rounded-lg bg-red-50 p-4 text-sm leading-6 text-red-700">{error}</div>}
           <button disabled={!file || status === 'scanning'} onClick={analyze} className="mt-4 w-full rounded-md bg-forest-900 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50">Analyze with AI Vision</button>
@@ -1191,18 +1380,18 @@ function Learning() {
         {learning.map((course) => {
           const done = course.completedLessonsByUser[currentUser.id]?.length || 0
           const certified = Boolean(course.certificatesByUser[currentUser.id])
-          return <Card key={course.id} className={`p-5 transition ${activeCourseId === course.id ? 'ring-2 ring-forest-500' : ''}`}><BookOpen className="text-forest-700" /><h3 className="mt-4 font-semibold">{course.title}</h3><p className="mt-2 text-sm text-slate-600">{course.lessons.length} lessons - {course.level}</p><p className="mt-3 text-sm leading-6 text-slate-500">{course.summary}</p><div className="mt-5 h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-forest-500" style={{ width: `${Math.round((done / course.lessons.length) * 100)}%` }} /></div><button onClick={() => setActiveCourseId(course.id)} className="mt-4 w-full rounded-md border border-line px-3 py-2 text-sm font-semibold text-forest-800">{certified ? 'View certificate pathway' : 'Open course'}</button></Card>
+          return <Card key={course.id} className={`p-5 transition ${activeCourseId === course.id ? 'ring-2 ring-forest-500' : ''}`}><BookOpen className="text-forest-700" /><h3 className="mt-4 font-semibold">{course.title}</h3><p className="mt-2 text-sm text-slate-600">{course.lessons.length} lessons - {course.level}</p><p className="mt-2 text-xs font-medium text-forest-700">For: {course.audience}</p><p className="mt-3 text-sm leading-6 text-slate-500">{course.summary}</p><div className="mt-5 h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-forest-500" style={{ width: `${Math.round((done / course.lessons.length) * 100)}%` }} /></div><button onClick={() => setActiveCourseId(course.id)} className="mt-4 w-full rounded-md border border-line px-3 py-2 text-sm font-semibold text-forest-800">{certified ? 'View certificate pathway' : 'Open course'}</button></Card>
         })}
       </div>
       <Card className="mt-6 p-5">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div><h3 className="text-xl font-semibold">{activeCourse.title}</h3><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{activeCourse.summary}</p></div>
+          <div><h3 className="text-xl font-semibold">{activeCourse.title}</h3><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{activeCourse.summary}</p><p className="mt-3 text-sm text-slate-600"><span className="font-semibold">Designed for:</span> {activeCourse.audience}</p><p className="mt-1 text-sm text-slate-600"><span className="font-semibold">Certificate pathway:</span> {activeCourse.certification}</p></div>
           <div className="rounded-lg bg-forest-50 p-3 text-sm font-semibold text-forest-800">{progress}% complete</div>
         </div>
         <div className="mt-5 grid gap-3">
           {activeCourse.lessons.map((lesson, index) => {
             const done = completed.includes(lesson.id)
-            return <div key={lesson.id} className="rounded-lg border border-line p-4"><div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[0.14em] text-forest-700">{lesson.type} - Lesson {index + 1}</p><h4 className="mt-2 font-semibold">{lesson.title}</h4><p className="mt-2 text-sm leading-6 text-slate-600">{lesson.content}</p>{lesson.questions && <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-slate-600">{lesson.questions.map((q) => <li key={q}>{q}</li>)}</ul>}</div><button onClick={() => completeLesson(activeCourse.id, lesson.id)} className="rounded-md bg-forest-900 px-3 py-2 text-sm font-semibold text-white">{done ? 'Completed' : 'Mark complete'}</button></div></div>
+            return <div key={lesson.id} className="rounded-lg border border-line p-4"><div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[0.14em] text-forest-700">{lesson.type} - Lesson {index + 1}{lesson.duration ? ` · ${lesson.duration}` : ''}</p><h4 className="mt-2 font-semibold">{lesson.title}</h4><p className="mt-2 text-sm leading-6 text-slate-600">{lesson.content}</p>{lesson.questions && <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-slate-600">{lesson.questions.map((q) => <li key={q}>{q}</li>)}</ul>}</div><button onClick={() => completeLesson(activeCourse.id, lesson.id)} className="rounded-md bg-forest-900 px-3 py-2 text-sm font-semibold text-white">{done ? 'Completed' : 'Mark complete'}</button></div></div>
           })}
         </div>
         {activeCourse.certificatesByUser[currentUser.id] && <div className="mt-5 rounded-lg bg-forest-900 p-4 text-white"><p className="font-semibold">{activeCourse.certification}</p><p className="mt-1 text-sm text-emerald-100">Certification earned from completed lessons and quiz work.</p></div>}
@@ -1599,33 +1788,41 @@ function TrendChart({ data = trendData }) {
 }
 
 function AuthPage() {
-  const { currentUser, token, signIn, signUp } = useAuth()
-  const [mode, setMode] = useState('signin')
-  const [form, setForm] = useState({ username: '', email: '', password: '', country: 'Global' })
-  const [error, setError] = useState('')
-  const [status, setStatus] = useState('idle')
+  const { signIn, signUp, signInAsGuest, loadingUser } = useAuth()
   const navigate = useNavigate()
+  const [mode, setMode] = useState('login')
+  const [form, setForm] = useState({ username: '', password: '', email: '', country: '' })
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
 
-  if (currentUser && token) return <Navigate to="/app" replace />
-
-  const submit = async (event) => {
-    event.preventDefault()
-    setError('')
-    setStatus('submitting')
+  const continueAsGuest = async () => {
+    setLoading(true)
+    setError(null)
     try {
-      const user = mode === 'signin'
-        ? await signIn({ username: form.username, password: form.password })
-        : await signUp({
-            username: form.username,
-            email: form.email,
-            password: form.password,
-            country: form.country,
-          })
-      navigate(user.onboardingComplete ? '/app' : '/onboarding')
+      await signInAsGuest()
+      navigate('/app')
     } catch (err) {
-      setError(err.message)
+      setError(err.message || 'Unable to continue as guest')
     } finally {
-      setStatus('idle')
+      setLoading(false)
+    }
+  }
+
+  const submit = async (e) => {
+    e.preventDefault()
+    setLoading(true)
+    setError(null)
+    try {
+      if (mode === 'login') {
+        await signIn({ username: form.username, password: form.password })
+      } else {
+        await signUp({ username: form.username, password: form.password, email: form.email, country: form.country })
+      }
+      navigate('/app')
+    } catch (err) {
+      setError(err.message || 'Authentication failed')
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -1634,26 +1831,30 @@ function AuthPage() {
       <section className="relative overflow-hidden p-8 md:p-14">
         <div className="absolute inset-0 environmental-grid opacity-40" />
         <div className="relative z-10 max-w-2xl">
-          <NavLink to="/" className="flex items-center gap-3 text-lg font-semibold"><span className="grid h-10 w-10 place-items-center rounded-lg bg-white text-forest-900"><Leaf /></span>CircularHub</NavLink>
-          <h1 className="mt-20 text-5xl font-semibold leading-tight md:text-6xl">Enter the CircularHub workspace.</h1>
-          <p className="mt-6 text-lg leading-8 text-emerald-50">Use a real account to access scanner tools, campaigns, marketplace workflows, and protected community features.</p>
+          <NavLink to="/" className="flex items-center gap-3 text-lg font-semibold">
+            <span className="grid h-10 w-10 place-items-center rounded-lg bg-white text-forest-900"><Leaf /></span>
+            CircularHub
+          </NavLink>
+          <h1 className="mt-12 text-4xl font-semibold leading-tight md:text-5xl">Welcome back</h1>
+          <p className="mt-4 text-lg leading-8 text-emerald-50">Sign in to save your progress, or continue as a guest without creating an account.</p>
         </div>
       </section>
       <section className="grid place-items-center bg-white p-5 text-ink">
         <Card className="w-full max-w-md p-6">
-          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-forest-700">{mode === 'signin' ? 'Sign in' : 'Create account'}</p>
-          <h2 className="mt-3 text-2xl font-semibold">{mode === 'signin' ? 'Welcome back' : 'Join CircularHub'}</h2>
-          <form onSubmit={submit} className="mt-6 space-y-3">
-            <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} className="w-full rounded-md border border-line px-3 py-3 text-sm" placeholder="Username or email" required />
-            {mode === 'signup' && <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full rounded-md border border-line px-3 py-3 text-sm" placeholder="Email" required />}
-            {mode === 'signup' && <input value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })} className="w-full rounded-md border border-line px-3 py-3 text-sm" placeholder="Country" />}
-            <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} className="w-full rounded-md border border-line px-3 py-3 text-sm" placeholder="Password" required />
-            {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
-            <button disabled={status === 'submitting'} className="w-full rounded-md bg-forest-900 px-4 py-3 text-sm font-semibold text-white disabled:opacity-60">{status === 'submitting' ? 'Working...' : mode === 'signin' ? 'Sign in' : 'Create account'}</button>
+          <div className="flex items-center justify-between">
+            <h2 className="text-2xl font-semibold">{mode === 'login' ? 'Sign in' : 'Create account'}</h2>
+            <button onClick={() => setMode(mode === 'login' ? 'signup' : 'login')} className="text-sm text-forest-700">{mode === 'login' ? 'Create account' : 'Have an account?'}</button>
+          </div>
+          {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
+          <form onSubmit={submit} className="mt-4 space-y-4">
+            <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="Username or email" className="w-full rounded-md border border-line px-3 py-2 text-sm" />
+            {mode === 'signup' && <input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="Email" className="w-full rounded-md border border-line px-3 py-2 text-sm" />}
+            <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="Password" className="w-full rounded-md border border-line px-3 py-2 text-sm" />
+            {mode === 'signup' && <input value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })} placeholder="Country (optional)" className="w-full rounded-md border border-line px-3 py-2 text-sm" />}
+            <button disabled={loading || loadingUser} className="w-full rounded-md bg-forest-900 px-4 py-3 text-sm font-semibold text-white">{loading || loadingUser ? 'Please wait…' : (mode === 'login' ? 'Sign in' : 'Create account')}</button>
           </form>
-          <button onClick={() => { setMode(mode === 'signin' ? 'signup' : 'signin'); setError('') }} className="mt-4 w-full rounded-md border border-line px-4 py-3 text-sm font-semibold text-slate-700">
-            {mode === 'signin' ? 'Create a new account' : 'Use an existing account'}
-          </button>
+          <div className="mt-4 text-center text-sm text-slate-600">You can also explore the app without signing in.</div>
+          <button type="button" onClick={continueAsGuest} disabled={loading || loadingUser} className="mt-4 w-full rounded-md border border-forest-900 bg-white px-4 py-3 text-sm font-semibold text-forest-900">Continue as guest</button>
         </Card>
       </section>
     </div>
@@ -1712,9 +1913,9 @@ function ChoiceGrid({ title, values, selected, onToggle }) {
 }
 
 function ProtectedRoute({ children }) {
-  const { currentUser, token } = useAuth()
-  if (!currentUser || !token) return <Navigate to="/auth" replace />
-  if (!currentUser.onboardingComplete && window.location.pathname !== '/onboarding') return <Navigate to="/onboarding" replace />
+  const { token, guest, loadingUser } = useAuth()
+  if (loadingUser) return <div className="p-8">Loading user…</div>
+  if (!token && !guest) return <Navigate to="/auth" replace />
   return children
 }
 

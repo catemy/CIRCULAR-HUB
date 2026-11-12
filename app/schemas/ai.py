@@ -24,3 +24,13 @@ class WasteScanResponse(BaseModel):
     provider: str
     model: str
     report: WasteScanReport
+
+
+class AssistantChatRequest(BaseModel):
+    question: str = Field(min_length=3, max_length=2000)
+
+
+class AssistantChatResponse(BaseModel):
+    answer: str
+    provider: str
+    model: str

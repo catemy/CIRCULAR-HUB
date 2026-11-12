@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from uuid import UUID
 from datetime import datetime
 
 class ArticleBase(BaseModel):
@@ -7,7 +8,7 @@ class ArticleBase(BaseModel):
     category: str
 
 class Article(ArticleBase):
-    id: str
+    id: UUID
     created_at: datetime
 
     class Config:

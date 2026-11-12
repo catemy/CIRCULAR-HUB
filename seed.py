@@ -1,9 +1,13 @@
 import asyncio
+from app.core.config import settings
 from app.database import async_session, engine, Base, ensure_sqlite_dev_schema
 from app.models import User, Video, Article, WasteCategory, ImpactMetric
 from app.core.security import get_password_hash
 
 async def seed_data():
+    if settings.ENVIRONMENT != "development":
+        raise RuntimeError("Demo seed data is only allowed when ENVIRONMENT=development.")
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await ensure_sqlite_dev_schema()

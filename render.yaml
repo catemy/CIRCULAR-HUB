@@ -5,14 +5,15 @@ services:
     region: oregon
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
       - key: ENVIRONMENT
-        value: production
+        value: staging
       - key: SECRET_KEY
         generateValue: true
       - key: ALLOWED_ORIGINS
-        value: "*"
+        value: https://circularhub-web.onrender.com
       - key: DATABASE_URL
         fromDatabase:
           name: circularhub-db
@@ -22,8 +23,12 @@ services:
     name: circularhub-web
     env: static
     region: oregon
-    buildCommand: npm install && npm run build
+    buildCommand: npm ci && npm run build
     staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
     envVars:
       - key: VITE_API_BASE_URL
         fromService:

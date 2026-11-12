@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional
+from uuid import UUID
 from datetime import datetime
 
 class VideoBase(BaseModel):
@@ -12,8 +13,8 @@ class VideoCreate(VideoBase):
     pass
 
 class Video(VideoBase):
-    id: str
-    user_id: str
+    id: UUID
+    user_id: UUID
     likes_count: int
     comments_count: int
     created_at: datetime
@@ -22,18 +23,18 @@ class Video(VideoBase):
         from_attributes = True
 
 class LikeCreate(BaseModel):
-    video_id: str
+    video_id: UUID
 
 class CommentBase(BaseModel):
     content: str
 
 class CommentCreate(CommentBase):
-    video_id: str
+    video_id: UUID
 
 class Comment(CommentBase):
-    id: str
-    user_id: str
-    video_id: str
+    id: UUID
+    user_id: UUID
+    video_id: UUID
     created_at: datetime
 
     class Config:
