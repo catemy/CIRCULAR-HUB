@@ -19,9 +19,9 @@ services:
           name: circularhub-db
           property: connectionString
 
-  - type: static
+  - type: web
     name: circularhub-web
-    env: static
+    runtime: static
     region: oregon
     buildCommand: npm ci && npm run build
     staticPublishPath: dist
