@@ -74,7 +74,7 @@ This repository now includes deployment-ready files for a permanent hosted setup
 - `render.yaml` for the backend API, PostgreSQL database, and static frontend
 - `Procfile` for the backend web process
 
-The checked-in Render blueprint is configured for **free-tier staging/demo**, not production availability. It uses generated secrets and strict staging configuration. The frontend origin is set to `https://circularhub-web.onrender.com`; update `ALLOWED_ORIGINS` if Render assigns a different URL or you attach a custom domain.
+The checked-in Render blueprint is configured for **free-tier staging/demo**, not production availability. It uses generated secrets and strict staging configuration. The frontend build targets `https://circularhub-api.onrender.com`, and the API allows `https://circularhub-web.onrender.com`. After provisioning, verify that Render assigned these exact service URLs. If either URL differs or you attach a custom domain, update the API's `ALLOWED_ORIGINS` and the static site's `VITE_API_BASE_URL` to match, then redeploy.
 
 Staging deployment flow:
 

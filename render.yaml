@@ -1,7 +1,7 @@
 services:
   - type: web
     name: circularhub-api
-    env: python
+    runtime: python
     region: oregon
     plan: free
     buildCommand: pip install -r requirements.txt
@@ -22,7 +22,6 @@ services:
   - type: web
     name: circularhub-web
     runtime: static
-    region: oregon
     buildCommand: npm ci && npm run build
     staticPublishPath: dist
     routes:
@@ -31,10 +30,7 @@ services:
         destination: /index.html
     envVars:
       - key: VITE_API_BASE_URL
-        fromService:
-          type: web
-          name: circularhub-api
-          property: url
+        value: https://circularhub-api.onrender.com
 
 databases:
   - name: circularhub-db
